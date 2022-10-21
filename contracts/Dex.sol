@@ -7,8 +7,7 @@ import "./Tokens.sol";
 
 contract Dex {
     struct Pool {
-        ERC20 tokenA;
-        ERC20 tokenB;
+        mapping(string => ERC20) poolTokensSwapped;
         bool isOpen;
     }
 
@@ -20,7 +19,10 @@ contract Dex {
         string memory symbolB = tokenB.symbol();
         string memory poolName = string.concat(symbolA, symbolB);
 
-        pools[poolName] = Pool({tokenA: tokenA, tokenB: tokenB, isOpen: true});
+        Pool storage pool = pools[poolName];
+        pool.isOpen = true;
+        pool.poolTokensSwapped[symbolA] = tokenB;
+        pool.poolTokensSwapped[symbolB] = tokenA;
 
         console.log("new pool registered: ", poolName);
     }
@@ -28,16 +30,33 @@ contract Dex {
     function swap(
         string calldata poolName,
         ERC20 quoteToken,
-        uint256 amount
-    ) public {}
+        uint256 depositAmount
+    ) public validPool(poolName) {
+        ERC20 baseToken = pools[poolName].poolTokensSwapped[
+            quoteToken.symbol()
+        ];
+
+        uint256 baseTokensToReturn = calculateTokenSwap(
+            poolName,
+            quoteToken,
+            depositAmount
+        );
+        require(
+            baseToken.balanceOf(address(this)) > baseTokensToReturn,
+            "not enough base tokens in the pool"
+        );
+
+        quoteToken.transferFrom(msg.sender, address(this), depositAmount);
+
+        baseToken.approve(address(this), baseTokensToReturn);
+        baseToken.transferFrom(address(this), msg.sender, baseTokensToReturn);
+    }
 
     function deposit(
         string calldata poolName,
         ERC20 token,
         uint256 amount
-    ) public {
-        require(pools[poolName].isOpen, "pool does not exist or is not opened");
-
+    ) public validPool(poolName) {
         token.transferFrom(msg.sender, address(this), amount);
         poolTokenBalances[msg.sender][token] += amount;
     }
@@ -46,12 +65,55 @@ contract Dex {
         string calldata poolName,
         ERC20 token,
         uint256 amount
-    ) public {
-        require(pools[poolName].isOpen, "pool does not exist or is not opened");
+    ) public validPool(poolName) {
         require(poolTokenBalances[msg.sender][token] >= amount);
 
         token.approve(address(this), amount);
         token.transferFrom(address(this), msg.sender, amount);
         poolTokenBalances[msg.sender][token] -= amount;
+    }
+
+    function calculateTokenSwap(
+        string calldata poolName,
+        ERC20 quoteToken,
+        uint256 depositAmount
+    ) public view returns (uint256) {
+        require(
+            quoteToken.balanceOf(address(this)) > 0,
+            "balance of tokens in pool cannot be zero"
+        );
+
+        ERC20 baseToken = pools[poolName].poolTokensSwapped[
+            quoteToken.symbol()
+        ];
+        require(
+            baseToken.balanceOf(address(this)) > 0,
+            "balance of tokens in pool cannot be zero"
+        );
+
+        uint256 price = getPrice(poolName, baseToken);
+
+        return depositAmount / price;
+    }
+
+    // X * Y = K
+    function getPrice(string calldata poolName, ERC20 baseToken)
+        public
+        view
+        returns (uint256)
+    {
+        ERC20 quoteToken = pools[poolName].poolTokensSwapped[
+            baseToken.symbol()
+        ];
+
+        uint256 quoteTokenSupply = quoteToken.balanceOf(address(this));
+        uint256 baseTokenSupply = baseToken.balanceOf(address(this));
+
+        return quoteTokenSupply / baseTokenSupply;
+    }
+
+    modifier validPool(string calldata poolName) {
+        assert(pools[poolName].isOpen == true);
+        _;
     }
 }
